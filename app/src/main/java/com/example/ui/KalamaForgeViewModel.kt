@@ -53,14 +53,19 @@ class KalamaForgeViewModel(application: Application) : AndroidViewModel(applicat
     val backups: StateFlow<List<KernelBackupEntity>> = repository.backups
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    private var detectedStockTable: List<OppFrequencyPoint> = KalamaDefaultOppTable.buildStockPoints()
+
     init {
-        initializeStockKernelBackup()
+        initializeStockKernelBackupAndTable()
     }
 
-    private fun initializeStockKernelBackup() {
+    private fun initializeStockKernelBackupAndTable() {
         viewModelScope.launch {
             _uiState.update { it.copy(isBusy = true) }
             val env = engine.probeEnvironment()
+            val liveStock = engine.readLiveOrDefaultStockOppTable()
+            detectedStockTable = liveStock
+
             var primaryStock = repository.getPrimaryStockBackup()
             if (primaryStock == null) {
                 val backupRes = engine.backupKernelPartitions(
@@ -69,13 +74,15 @@ class KalamaForgeViewModel(application: Application) : AndroidViewModel(applicat
                     isOriginalStock = true
                 )
                 val entity = KernelBackupEntity(
-                    label = "Original Stock Kernel (SM8550)",
-                    partitionName = "boot + vendor_boot",
+                    label = "Original Stock Kernel (boot + vendor_boot + vbmeta)",
+                    partitionName = "boot + vendor_boot + vbmeta",
                     blockDevicePath = env.bootBlockPath,
                     localFilePath = backupRes.bootFile.absolutePath,
                     vendorBootFilePath = backupRes.vendorBootFile.absolutePath,
+                    vbmetaFilePath = backupRes.vbmetaFile.absolutePath,
                     sha256Checksum = backupRes.bootSha256,
                     vendorBootSha256 = backupRes.vendorBootSha256,
+                    vbmetaSha256 = backupRes.vbmetaSha256,
                     sizeBytes = backupRes.totalSizeBytes,
                     kernelVersion = env.unameKernelVersion,
                     headerVersion = 4,
@@ -86,11 +93,13 @@ class KalamaForgeViewModel(application: Application) : AndroidViewModel(applicat
                 )
                 repository.saveBackup(entity)
             }
+            val mbStatus = if (env.magiskbootPath != null) "magiskboot ready (${env.magiskbootPath})" else "FDT binary patcher ready"
             _uiState.update {
                 it.copy(
                     environment = env,
+                    oppPoints = liveStock,
                     isBusy = false,
-                    statusMessage = "Original Stock Kernel backed up • Select a cluster to view or edit frequencies & voltages"
+                    statusMessage = "Stock boot + vendor_boot + vbmeta backed up • $mbStatus"
                 )
             }
         }
@@ -104,9 +113,6 @@ class KalamaForgeViewModel(application: Application) : AndroidViewModel(applicat
         _uiState.update { it.copy(selectedCluster = cluster) }
     }
 
-    /**
-     * Adjusts a single step's voltage independently without changing its frequency.
-     */
     fun adjustPointVoltage(pointId: String, deltaMv: Int) {
         _uiState.update { state ->
             val updated = state.oppPoints.map { pt ->
@@ -130,9 +136,6 @@ class KalamaForgeViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
-    /**
-     * Adjusts a single step's frequency independently without changing its voltage.
-     */
     fun adjustPointFrequency(pointId: String, deltaMhz: Int) {
         _uiState.update { state ->
             val updated = state.oppPoints.map { pt ->
@@ -158,9 +161,6 @@ class KalamaForgeViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
-    /**
-     * Shifts all voltages in the currently selected cluster up or down independently of frequencies.
-     */
     fun shiftClusterVoltages(cluster: KalamaCluster, deltaMv: Int) {
         _uiState.update { state ->
             val updated = state.oppPoints.map { pt ->
@@ -179,9 +179,6 @@ class KalamaForgeViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
-    /**
-     * Resets a single step back to its original stock frequency and stock voltage.
-     */
     fun resetPointToStock(pointId: String) {
         _uiState.update { state ->
             val updated = state.oppPoints.map { pt ->
@@ -204,11 +201,8 @@ class KalamaForgeViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
-    /**
-     * Resets the entire selected cluster (or all clusters) back to unmodified Samsung Stock frequencies & voltages.
-     */
     fun resetClusterToStock(cluster: KalamaCluster) {
-        val stockForCluster = KalamaDefaultOppTable.buildStockPoints().filter { it.cluster == cluster }
+        val stockForCluster = detectedStockTable.filter { it.cluster == cluster }
         _uiState.update { state ->
             val remainingOtherClusters = state.oppPoints.filter { it.cluster != cluster }
             state.copy(
@@ -222,16 +216,13 @@ class KalamaForgeViewModel(application: Application) : AndroidViewModel(applicat
     fun resetAllClustersToStock() {
         _uiState.update {
             it.copy(
-                oppPoints = KalamaDefaultOppTable.buildStockPoints(),
+                oppPoints = detectedStockTable,
                 isError = false,
                 statusMessage = "All CPU & GPU clusters reset to Samsung Stock frequencies and voltages"
             )
         }
     }
 
-    /**
-     * Adds a new Overclock or Underclock (or custom intermediate) frequency step with its own independent voltage.
-     */
     fun addCustomFrequencyStep(cluster: KalamaCluster, freqMhzInput: Int, voltageMvInput: Int) {
         val freqMhz = freqMhzInput.coerceIn(100, 4000)
         val voltageMv = voltageMvInput.coerceIn(500, 1300)
@@ -305,12 +296,14 @@ class KalamaForgeViewModel(application: Application) : AndroidViewModel(applicat
             )
             val entity = KernelBackupEntity(
                 label = "Original Stock Kernel (${backups.value.size + 1})",
-                partitionName = "boot + vendor_boot",
+                partitionName = "boot + vendor_boot + vbmeta",
                 blockDevicePath = env.bootBlockPath,
                 localFilePath = backupRes.bootFile.absolutePath,
                 vendorBootFilePath = backupRes.vendorBootFile.absolutePath,
+                vbmetaFilePath = backupRes.vbmetaFile.absolutePath,
                 sha256Checksum = backupRes.bootSha256,
                 vendorBootSha256 = backupRes.vendorBootSha256,
+                vbmetaSha256 = backupRes.vbmetaSha256,
                 sizeBytes = backupRes.totalSizeBytes,
                 kernelVersion = env.unameKernelVersion,
                 headerVersion = 4,
@@ -323,15 +316,12 @@ class KalamaForgeViewModel(application: Application) : AndroidViewModel(applicat
             _uiState.update {
                 it.copy(
                     isBusy = false,
-                    statusMessage = "Backed up Stock Kernel (${backupRes.bootSha256.take(16)}...)"
+                    statusMessage = "Backed up Stock boot + vendor_boot + vbmeta (${backupRes.bootSha256.take(16)}...)"
                 )
             }
         }
     }
 
-    /**
-     * Exports / extracts the Original Stock Kernel as a raw `boot.img`, TWRP `.zip`, or Odin `.tar`.
-     */
     fun exportOriginalStockKernel(format: ExportFormat) {
         val env = _uiState.value.environment ?: return
         viewModelScope.launch {
@@ -347,6 +337,7 @@ class KalamaForgeViewModel(application: Application) : AndroidViewModel(applicat
                 env = env,
                 bootFile = File(stock.localFilePath),
                 vendorBootFile = File(stock.vendorBootFilePath),
+                vbmetaFile = stock.vbmetaFilePath.takeIf { it.isNotBlank() }?.let { File(it) },
                 format = format,
                 isOriginalStock = true,
                 oppSummary = "Original Stock SM8550 Kernel"
@@ -362,69 +353,89 @@ class KalamaForgeViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
-    /**
-     * Builds & exports the Modified Kernel (with your Overclock/Underclock steps and custom voltages)
-     * as a raw `boot.img`, TWRP Flashable `.zip`, or Samsung Odin `.tar`.
-     */
     fun exportModifiedKernel(format: ExportFormat) {
         val state = _uiState.value
         val env = state.environment ?: return
         viewModelScope.launch {
             _uiState.update { it.copy(isBusy = true, isError = false) }
-            val (modBoot, modVendor) = engine.buildModifiedKernelImages(state.oppPoints)
+            val stock = repository.getPrimaryStockBackup() ?: backups.value.firstOrNull()
+            val bundle = engine.buildModifiedKernelImagesInPlace(
+                env = env,
+                stockBootSource = stock?.localFilePath?.let { File(it) },
+                stockVendorBootSource = stock?.vendorBootFilePath?.let { File(it) },
+                stockVbmetaSource = stock?.vbmetaFilePath?.takeIf { it.isNotBlank() }?.let { File(it) },
+                activeOppPoints = state.oppPoints
+            )
             val summary = buildModificationSummary(state.oppPoints)
             val exported = engine.exportKernelArtifact(
                 env = env,
-                bootFile = modBoot,
-                vendorBootFile = modVendor,
+                bootFile = bundle.bootFile,
+                vendorBootFile = bundle.vendorBootFile,
+                vbmetaFile = bundle.vbmetaFile,
                 format = format,
                 isOriginalStock = false,
                 oppSummary = summary
             )
+            val fdtStats = "${bundle.fdtPatchResult.oppMicrovoltPatchedCount} uV & ${bundle.fdtPatchResult.oppHzPatchedCount} Hz nodes patched"
             _uiState.update {
                 it.copy(
                     isBusy = false,
                     lastExportedPackage = exported,
                     exportedHistory = (listOf(exported) + it.exportedHistory).take(8),
-                    statusMessage = "Exported Modified Kernel (${format.extension}) -> ${exported.filePath}"
+                    statusMessage = "Exported (${format.extension}) [$fdtStats] -> ${exported.filePath}"
                 )
             }
         }
     }
 
-    /**
-     * Flashes the Modified Kernel directly to the device partition and runs a read-back SHA-256 verification.
-     */
     fun flashModifiedKernelDirectly() {
         val state = _uiState.value
         val env = state.environment ?: return
         viewModelScope.launch {
             _uiState.update { it.copy(isBusy = true, isError = false) }
-            val (modBoot, modVendor) = engine.buildModifiedKernelImages(state.oppPoints)
-            val report = engine.flashKernelAndVerify(
-                env = env,
-                actionTitle = "Flashed Modified Kernel (${buildModificationSummary(state.oppPoints)})",
-                sourceBootFile = modBoot,
-                sourceVendorBootFile = modVendor
-            )
-            _uiState.update {
-                it.copy(
-                    isBusy = false,
-                    lastVerificationReport = report,
-                    isError = !report.passed,
-                    statusMessage = if (report.passed) {
-                        "Flashed Modified Kernel & Verified Partition SHA-256 Match!"
-                    } else {
-                        "Verification mismatch detected!"
-                    }
+            try {
+                val stock = repository.getPrimaryStockBackup() ?: backups.value.firstOrNull()
+                val stockBootFile = stock?.localFilePath?.let { File(it) }
+                val bundle = engine.buildModifiedKernelImagesInPlace(
+                    env = env,
+                    stockBootSource = stockBootFile,
+                    stockVendorBootSource = stock?.vendorBootFilePath?.let { File(it) },
+                    stockVbmetaSource = stock?.vbmetaFilePath?.takeIf { it.isNotBlank() }?.let { File(it) },
+                    activeOppPoints = state.oppPoints
                 )
+                val fdtStats = "${bundle.fdtPatchResult.oppMicrovoltPatchedCount} uV / ${bundle.fdtPatchResult.oppHzPatchedCount} Hz FDT nodes"
+                val report = engine.flashKernelAndVerify(
+                    env = env,
+                    actionTitle = "Flashed Patched Kernel ($fdtStats) + vbmeta (flags=0x03)",
+                    sourceBootFile = bundle.bootFile,
+                    sourceVendorBootFile = bundle.vendorBootFile,
+                    sourceVbmetaFile = bundle.vbmetaFile,
+                    expectedStockBootSize = stockBootFile?.length() ?: bundle.bootFile.length()
+                )
+                _uiState.update {
+                    it.copy(
+                        isBusy = false,
+                        lastVerificationReport = report,
+                        isError = !report.passed,
+                        statusMessage = if (report.passed) {
+                            "Flashed Patched Kernel ($fdtStats) + vbmeta & Verified SHA-256!"
+                        } else {
+                            "Verification mismatch detected!"
+                        }
+                    )
+                }
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        isBusy = false,
+                        isError = true,
+                        statusMessage = e.message ?: "Pre-Flash Guard blocked unsafe flash"
+                    )
+                }
             }
         }
     }
 
-    /**
-     * Flashes the Original Stock Kernel backup directly to the device partition and verifies SHA-256.
-     */
     fun flashOriginalStockKernelDirectly() {
         val env = _uiState.value.environment ?: return
         viewModelScope.launch {
@@ -436,18 +447,21 @@ class KalamaForgeViewModel(application: Application) : AndroidViewModel(applicat
                 }
                 return@launch
             }
+            val stockBootFile = File(stock.localFilePath)
             val report = engine.flashKernelAndVerify(
                 env = env,
-                actionTitle = "Restored Original Stock Kernel Backup",
-                sourceBootFile = File(stock.localFilePath),
-                sourceVendorBootFile = File(stock.vendorBootFilePath)
+                actionTitle = "Restored Original Stock Kernel + Stock vbmeta Backup",
+                sourceBootFile = stockBootFile,
+                sourceVendorBootFile = File(stock.vendorBootFilePath),
+                sourceVbmetaFile = stock.vbmetaFilePath.takeIf { it.isNotBlank() }?.let { File(it) },
+                expectedStockBootSize = stockBootFile.length()
             )
             _uiState.update {
                 it.copy(
                     isBusy = false,
                     lastVerificationReport = report,
                     isError = !report.passed,
-                    statusMessage = "Original Stock Kernel Flashed & Verified!"
+                    statusMessage = "Original Stock Kernel + vbmeta Flashed & Verified!"
                 )
             }
         }

@@ -5,6 +5,9 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import com.example.domain.FdtBinaryPatcher
+import com.example.domain.KalamaDefaultOppTable
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -19,6 +22,20 @@ class ExampleRobolectricTest {
     val composeTestRule = createAndroidComposeRule<MainActivity>()
 
     @Test
+    fun fdtBinaryPatcher_patchesOppHzAndOppMicrovoltNodesInPlace() {
+        val stockPoints = KalamaDefaultOppTable.buildStockPoints()
+        val fdtBytes = FdtBinaryPatcher.buildValidKalamaFdtBlob(stockPoints)
+
+        // Drop all voltages by -20mV and verify FdtBinaryPatcher patches all FDT opp-microvolt & opp-hz properties
+        val undervoltedPoints = stockPoints.map { it.copy(voltageMv = it.voltageMv - 20) }
+        val result = FdtBinaryPatcher.patchDtbByteArrayInPlace(fdtBytes, undervoltedPoints)
+
+        assertTrue("Expected at least 1 FDT blob found", result.dtbBlobsFound >= 1)
+        assertTrue("Expected opp-hz properties patched", result.oppHzPatchedCount >= 10)
+        assertTrue("Expected opp-microvolt properties patched", result.oppMicrovoltPatchedCount >= 10)
+    }
+
+    @Test
     fun simpleKalamaForge_frequenciesVoltagesAndExportFlashWork() {
         composeTestRule.waitForIdle()
 
@@ -27,8 +44,8 @@ class ExampleRobolectricTest {
         composeTestRule.onNodeWithTag("quick_add_overclock_btn").performScrollTo().assertIsDisplayed()
         composeTestRule.onNodeWithTag("inject_custom_opp_btn").performScrollTo().assertIsDisplayed()
 
-        // Verify independent voltage & frequency adjusters on the Prime 595 MHz stock step
-        composeTestRule.onNodeWithTag("volt_minus_5_p_595").performScrollTo().performClick()
+        // Verify cluster-wide voltage shift works
+        composeTestRule.onNodeWithTag("cluster_uv_minus_10_btn").performScrollTo().performClick()
         composeTestRule.waitForIdle()
 
         // Switch to Tab 2: Backup, Export & Flash

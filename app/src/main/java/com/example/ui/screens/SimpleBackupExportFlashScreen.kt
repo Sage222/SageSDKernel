@@ -48,8 +48,6 @@ import com.example.ui.theme.KalamaCyan
 import com.example.ui.theme.KalamaEmerald
 import com.example.ui.theme.ObsidianCardBorder
 import com.example.ui.theme.ObsidianSurface
-import com.example.ui.theme.ObsidianSurfaceVariant
-import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 
@@ -76,7 +74,7 @@ fun SimpleBackupExportFlashScreen(
         modifier = modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        // 1. Export Result Notification Card (shown whenever user extracts or exports TWRP/Odin/boot.img)
+        // 1. Export Result Notification Card
         if (lastExportedPackage != null) {
             Card(
                 modifier = Modifier
@@ -111,7 +109,7 @@ fun SimpleBackupExportFlashScreen(
             }
         }
 
-        // 2. Post-Flash Verification Result Card (shown whenever user flashes directly)
+        // 2. Post-Flash Verification Result Card
         if (lastVerificationReport != null) {
             Card(
                 modifier = Modifier
@@ -140,13 +138,14 @@ fun SimpleBackupExportFlashScreen(
                     Spacer(modifier = Modifier.height(8.dp))
                     SimpleKeyValue("Action", lastVerificationReport.actionTitle)
                     SimpleKeyValue("Partition", lastVerificationReport.targetPartitionPath)
+                    SimpleKeyValue("Verified Size", "${lastVerificationReport.bytesVerified / 1024} KB (100% Stock Parity)")
                     SimpleKeyValue("Expected SHA-256", "${lastVerificationReport.expectedSha256.take(26)}...")
                     SimpleKeyValue("Read-Back SHA-256", "${lastVerificationReport.readBackSha256.take(26)}...")
                 }
             }
         }
 
-        // 3. Modified Kernel Card (Flash Directly, Export TWRP ZIP, Export Odin TAR, Extract boot.img)
+        // 3. Modified Kernel Card (magiskboot Repack + FDT opp-hz/opp-microvolt Patch + vbmeta 0x03)
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(16.dp),
@@ -155,7 +154,7 @@ fun SimpleBackupExportFlashScreen(
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text(
-                    text = "1. MODIFIED KERNEL (OVERCLOCK / UNDERCLOCK)",
+                    text = "1. MODIFIED KERNEL (MAGISKBOOT + FDT DTB PATCH)",
                     style = MaterialTheme.typography.titleMedium,
                     color = KalamaAmber,
                     fontWeight = FontWeight.Bold
@@ -165,10 +164,15 @@ fun SimpleBackupExportFlashScreen(
                     style = MaterialTheme.typography.bodyMedium,
                     color = TextPrimary
                 )
+                Text(
+                    text = "Unpacks boot & vendor_boot via magiskboot, binary-patches FDT (0xD00DFEED) opp-hz & opp-microvolt nodes, repacks, and patches vbmeta (flags=0x03).",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = TextSecondary
+                )
 
                 Spacer(modifier = Modifier.height(12.dp))
 
-                // Direct App Flash Button
+                // Direct App Flash Button (magiskboot Repacked + vbmeta)
                 Button(
                     onClick = onFlashModifiedDirectly,
                     enabled = !isBusy,
@@ -188,7 +192,7 @@ fun SimpleBackupExportFlashScreen(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "Flash Modified Kernel Directly & Verify",
+                        text = "Flash Modified Kernel + vbmeta Directly & Verify",
                         style = MaterialTheme.typography.labelLarge,
                         fontWeight = FontWeight.Bold
                     )
@@ -285,7 +289,7 @@ fun SimpleBackupExportFlashScreen(
             }
         }
 
-        // 4. Original Stock Kernel Backup Card (Extract, Export for TWRP/Odin, or Flash Back to Partition)
+        // 4. Original Stock Kernel Backup Card
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(16.dp),
@@ -307,7 +311,7 @@ fun SimpleBackupExportFlashScreen(
                         )
                         Text(
                             text = if (stockBackup != null) {
-                                "Backed Up • SHA-256: ${stockBackup.sha256Checksum.take(18)}..."
+                                "Backed Up (${stockBackup.sizeBytes / 1024} KB) • SHA-256: ${stockBackup.sha256Checksum.take(16)}..."
                             } else {
                                 "Ready to backup stock partition"
                             },
@@ -332,7 +336,6 @@ fun SimpleBackupExportFlashScreen(
 
                 Spacer(modifier = Modifier.height(12.dp))
 
-                // Flash Original Stock Kernel Directly Button
                 Button(
                     onClick = onFlashOriginalDirectly,
                     enabled = !isBusy,

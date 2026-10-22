@@ -11,8 +11,10 @@ data class KernelBackupEntity(
     val blockDevicePath: String,
     val localFilePath: String,
     val vendorBootFilePath: String,
+    val vbmetaFilePath: String = "",
     val sha256Checksum: String,
     val vendorBootSha256: String,
+    val vbmetaSha256: String = "",
     val sizeBytes: Long,
     val kernelVersion: String,
     val headerVersion: Int,
@@ -26,7 +28,7 @@ data class KernelBackupEntity(
 @Entity(tableName = "flash_audit_logs")
 data class FlashAuditLogEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    val operationType: String, // BACKUP, EXTRACT_DTB, PATCH_SIGN, FLASH_VERIFY, RESTORE_STOCK, FAILSAFE_ROLLBACK
+    val operationType: String,
     val targetPartition: String,
     val expectedSha256: String,
     val verifiedReadBackSha256: String,

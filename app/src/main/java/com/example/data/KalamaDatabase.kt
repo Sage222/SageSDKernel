@@ -7,7 +7,7 @@ import androidx.room.RoomDatabase
 
 @Database(
     entities = [KernelBackupEntity::class, FlashAuditLogEntity::class],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class KalamaDatabase : RoomDatabase() {

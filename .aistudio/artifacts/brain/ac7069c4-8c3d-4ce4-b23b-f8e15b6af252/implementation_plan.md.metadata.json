@@ -1,0 +1,6 @@
+{
+  "summary":  "Updated implementation plan using on-device magiskboot to unpack the real boot.img and vendor_boot.img, parse and binary-patch the uncompressed Flattened Device Tree (0xD00DFEED) opp-hz and opp-microvolt properties, repack and pad the real partition images, patch vbmeta (flags=0x03), and remove the misleading Live sysfs button.",
+  "updatedAt":  "2026-10-22T03:46:34.411606606Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}
