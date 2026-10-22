@@ -5,8 +5,10 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -19,16 +21,19 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.DeveloperBoard
 import androidx.compose.material.icons.filled.FlashOn
-import androidx.compose.material.icons.filled.HealthAndSafety
-import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.outlined.FlashOn
-import androidx.compose.material.icons.outlined.HealthAndSafety
-import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -37,31 +42,36 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.example.ui.ForgeTab
 import com.example.ui.KalamaForgeViewModel
-import com.example.ui.components.KalamaSiliconDieHeroCard
-import com.example.ui.components.KalamaTopTelemetryBar
-import com.example.ui.components.KernelShellConsoleDrawer
-import com.example.ui.screens.AvbSignerAndFlashScreen
-import com.example.ui.screens.FailSafeRecoveryScreen
-import com.example.ui.screens.OppFrequencyForgeScreen
-import com.example.ui.screens.PartitionsBackupScreen
+import com.example.ui.SimpleTab
+import com.example.ui.screens.SimpleBackupExportFlashScreen
+import com.example.ui.screens.SimpleFrequenciesScreen
+import com.example.ui.theme.KalamaCrimson
 import com.example.ui.theme.KalamaCyan
+import com.example.ui.theme.KalamaEmerald
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.theme.ObsidianBg
+import com.example.ui.theme.ObsidianCardBorder
 import com.example.ui.theme.ObsidianSurface
+import com.example.ui.theme.ObsidianSurfaceVariant
+import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 
 class MainActivity : ComponentActivity() {
@@ -76,42 +86,28 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private data class NavTabInfo(
-    val tab: ForgeTab,
+private data class SimpleNavTabInfo(
+    val tab: SimpleTab,
     val label: String,
     val selectedIcon: ImageVector,
     val unselectedIcon: ImageVector,
     val testTag: String
 )
 
-private val NAV_TABS = listOf(
-    NavTabInfo(
-        tab = ForgeTab.PARTITIONS,
-        label = "Partitions",
-        selectedIcon = Icons.Filled.Memory,
-        unselectedIcon = Icons.Outlined.Memory,
-        testTag = "nav_tab_partitions"
-    ),
-    NavTabInfo(
-        tab = ForgeTab.OPP_FORGE,
-        label = "OPP Forge",
+private val SIMPLE_TABS = listOf(
+    SimpleNavTabInfo(
+        tab = SimpleTab.FREQUENCIES,
+        label = "1. Frequencies & Voltages",
         selectedIcon = Icons.Filled.Speed,
         unselectedIcon = Icons.Outlined.Speed,
-        testTag = "nav_tab_opp_forge"
+        testTag = "nav_tab_frequencies"
     ),
-    NavTabInfo(
-        tab = ForgeTab.AVB_FLASH,
-        label = "AVB & Flash",
+    SimpleNavTabInfo(
+        tab = SimpleTab.BACKUP_EXPORT_FLASH,
+        label = "2. Backup, Export & Flash",
         selectedIcon = Icons.Filled.FlashOn,
         unselectedIcon = Icons.Outlined.FlashOn,
-        testTag = "nav_tab_avb_flash"
-    ),
-    NavTabInfo(
-        tab = ForgeTab.FAIL_SAFE,
-        label = "Fail-Safe",
-        selectedIcon = Icons.Filled.HealthAndSafety,
-        unselectedIcon = Icons.Outlined.HealthAndSafety,
-        testTag = "nav_tab_failsafe"
+        testTag = "nav_tab_export_flash"
     )
 )
 
@@ -121,11 +117,9 @@ fun KalamaForgeApp(
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val backups by viewModel.backups.collectAsStateWithLifecycle()
-    val auditLogs by viewModel.auditLogs.collectAsStateWithLifecycle()
 
-    // Mandatory BackHandler for custom state-switched navigation
-    BackHandler(enabled = uiState.selectedTab != ForgeTab.PARTITIONS) {
-        viewModel.selectTab(ForgeTab.PARTITIONS)
+    BackHandler(enabled = uiState.selectedTab != SimpleTab.FREQUENCIES) {
+        viewModel.selectTab(SimpleTab.FREQUENCIES)
     }
 
     BoxWithConstraints(
@@ -144,7 +138,7 @@ fun KalamaForgeApp(
                         containerColor = ObsidianSurface,
                         tonalElevation = 8.dp
                     ) {
-                        NAV_TABS.forEach { item ->
+                        SIMPLE_TABS.forEach { item ->
                             val selected = uiState.selectedTab == item.tab
                             NavigationBarItem(
                                 selected = selected,
@@ -158,7 +152,8 @@ fun KalamaForgeApp(
                                 label = {
                                     Text(
                                         text = item.label,
-                                        style = MaterialTheme.typography.labelSmall
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold
                                     )
                                 },
                                 colors = NavigationBarItemDefaults.colors(
@@ -185,7 +180,7 @@ fun KalamaForgeApp(
                         containerColor = ObsidianSurface,
                         modifier = Modifier.fillMaxHeight()
                     ) {
-                        NAV_TABS.forEach { item ->
+                        SIMPLE_TABS.forEach { item ->
                             val selected = uiState.selectedTab == item.tab
                             NavigationRailItem(
                                 selected = selected,
@@ -214,104 +209,57 @@ fun KalamaForgeApp(
                         .fillMaxHeight(),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    KalamaTopTelemetryBar(
-                        environment = uiState.environment,
-                        statusMessage = uiState.statusBannerMessage,
-                        isError = uiState.isStatusError,
-                        onToggleSandboxMode = { viewModel.toggleSandboxMode() }
+                    SimpleTopHeader(
+                        deviceName = uiState.environment?.detectedDeviceCode ?: "Samsung Snapdragon 8 Gen 2",
+                        statusMessage = uiState.statusMessage,
+                        isError = uiState.isError,
+                        onResetAllStock = { viewModel.resetAllClustersToStock() }
                     )
 
                     LazyColumn(
                         modifier = Modifier
                             .fillMaxSize()
-                            .widthIn(max = 720.dp),
+                            .widthIn(max = 700.dp),
                         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
                         verticalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
                         item {
-                            KalamaSiliconDieHeroCard(
-                                oppPoints = uiState.oppPoints,
-                                globalVoltageOffsetMv = uiState.globalVoltageOffsetMv,
-                                selectedCluster = uiState.selectedCluster,
-                                onSelectCluster = { cluster ->
-                                    viewModel.selectCluster(cluster)
-                                }
-                            )
-                        }
-
-                        item {
-                            KernelShellConsoleDrawer(lines = uiState.terminalOutputLines)
-                        }
-
-                        item {
                             when (uiState.selectedTab) {
-                                ForgeTab.PARTITIONS -> {
-                                    PartitionsBackupScreen(
-                                        environment = uiState.environment,
-                                        extractedKernel = uiState.extractedKernel,
-                                        backups = backups,
-                                        isBusy = uiState.isBusy,
-                                        onBackupKernel = { label -> viewModel.createNewKernelBackup(label) },
-                                        onExtractBackup = { backup -> viewModel.extractKernelFromBackup(backup) },
-                                        onReflashBackup = { backup -> viewModel.reflashBackupAndVerify(backup) },
-                                        onDeleteBackup = { backup -> viewModel.deleteSnapshotBackup(backup) },
-                                        onNavigateToOppForge = { viewModel.selectTab(ForgeTab.OPP_FORGE) }
-                                    )
-                                }
-
-                                ForgeTab.OPP_FORGE -> {
-                                    OppFrequencyForgeScreen(
+                                SimpleTab.FREQUENCIES -> {
+                                    SimpleFrequenciesScreen(
                                         selectedCluster = uiState.selectedCluster,
                                         oppPoints = uiState.oppPoints,
-                                        globalVoltageOffsetMv = uiState.globalVoltageOffsetMv,
-                                        activePresetName = uiState.activePresetName,
                                         onSelectCluster = { viewModel.selectCluster(it) },
-                                        onToggleOppPoint = { viewModel.toggleOppFrequencyPoint(it) },
-                                        onVoltageOffsetChange = { viewModel.setGlobalVoltageOffset(it) },
-                                        onApplyPreset = { viewModel.applyOppPreset(it) },
-                                        onAddCustomOppPoint = { cluster, mhz, mv ->
-                                            viewModel.addCustomOppPoint(cluster, mhz, mv)
+                                        onAdjustVoltage = { id, delta -> viewModel.adjustPointVoltage(id, delta) },
+                                        onAdjustFrequency = { id, delta -> viewModel.adjustPointFrequency(id, delta) },
+                                        onShiftClusterVoltages = { cluster, delta ->
+                                            viewModel.shiftClusterVoltages(cluster, delta)
                                         },
-                                        onProceedToSignAndFlash = {
-                                            viewModel.compileAndSignPatchedKernel()
-                                            viewModel.selectTab(ForgeTab.AVB_FLASH)
+                                        onResetPointToStock = { id -> viewModel.resetPointToStock(id) },
+                                        onResetClusterToStock = { cluster -> viewModel.resetClusterToStock(cluster) },
+                                        onAddCustomStep = { cluster, mhz, mv ->
+                                            viewModel.addCustomFrequencyStep(cluster, mhz, mv)
+                                        },
+                                        onRemoveCustomStep = { id -> viewModel.removeCustomStep(id) },
+                                        onToggleStepEnabled = { id -> viewModel.toggleStepEnabled(id) },
+                                        onGoToExportAndFlash = {
+                                            viewModel.selectTab(SimpleTab.BACKUP_EXPORT_FLASH)
                                         }
                                     )
                                 }
 
-                                ForgeTab.AVB_FLASH -> {
-                                    AvbSignerAndFlashScreen(
-                                        environment = uiState.environment,
-                                        selectedSigningMode = uiState.selectedSigningMode,
-                                        compiledArtifact = uiState.compiledArtifact,
+                                SimpleTab.BACKUP_EXPORT_FLASH -> {
+                                    SimpleBackupExportFlashScreen(
+                                        oppPoints = uiState.oppPoints,
+                                        backups = backups,
+                                        lastExportedPackage = uiState.lastExportedPackage,
                                         lastVerificationReport = uiState.lastVerificationReport,
-                                        simulateVerifyFault = uiState.simulateVerifyFaultNextFlash,
-                                        auditLogs = auditLogs,
                                         isBusy = uiState.isBusy,
-                                        onSelectSigningMode = { viewModel.setAvbSigningMode(it) },
-                                        onCompileAndSign = { viewModel.compileAndSignPatchedKernel() },
-                                        onToggleSimulateFault = { viewModel.setSimulateVerifyFault(it) },
-                                        onFlashAndVerifyPatched = { viewModel.flashPatchedKernelAndVerify() },
-                                        onReflashOriginalStock = { viewModel.reflashOriginalStockKernel() }
-                                    )
-                                }
-
-                                ForgeTab.FAIL_SAFE -> {
-                                    FailSafeRecoveryScreen(
-                                        failSafeConfig = uiState.failSafeConfig,
-                                        isBusy = uiState.isBusy,
-                                        onUpdateConfig = { w, b, r, p, t, v ->
-                                            viewModel.updateFailSafeSettings(w, b, r, p, t, v)
-                                        },
-                                        onArmWatchdogAndBuildZip = {
-                                            viewModel.deployFailSafeWatchdogAndRecoveryZip()
-                                        },
-                                        onImmediateRestoreStock = {
-                                            viewModel.reflashOriginalStockKernel()
-                                        },
-                                        onTriggerReboot = { mode ->
-                                            viewModel.triggerHardwareRebootAction(mode)
-                                        }
+                                        onExportModified = { format -> viewModel.exportModifiedKernel(format) },
+                                        onFlashModifiedDirectly = { viewModel.flashModifiedKernelDirectly() },
+                                        onBackupOriginalNow = { viewModel.backupOriginalStockKernelNow() },
+                                        onExportOriginal = { format -> viewModel.exportOriginalStockKernel(format) },
+                                        onFlashOriginalDirectly = { viewModel.flashOriginalStockKernelDirectly() }
                                     )
                                 }
                             }
@@ -322,6 +270,109 @@ fun KalamaForgeApp(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SimpleTopHeader(
+    deviceName: String,
+    statusMessage: String,
+    isError: Boolean,
+    onResetAllStock: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(ObsidianSurface)
+            .padding(horizontal = 16.dp, vertical = 10.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(38.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Color(0xFF10243E)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.DeveloperBoard,
+                        contentDescription = "Snapdragon 8 Gen 2",
+                        tint = KalamaCyan,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.width(10.dp))
+                Column {
+                    Text(
+                        text = "KalamaForge • Snapdragon 8 Gen 2",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = TextPrimary,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = deviceName,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = KalamaCyan
+                    )
+                }
+            }
+
+            OutlinedButton(
+                onClick = onResetAllStock,
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                border = BorderStroke(1.dp, ObsidianCardBorder),
+                modifier = Modifier.testTag("reset_all_stock_btn")
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Refresh,
+                    contentDescription = "Reset All to Stock",
+                    tint = TextSecondary,
+                    modifier = Modifier.size(14.dp)
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(
+                    text = "All Stock",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = TextSecondary
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Surface(
+            shape = RoundedCornerShape(8.dp),
+            color = if (isError) Color(0xFF360B11) else ObsidianSurfaceVariant,
+            border = BorderStroke(1.dp, if (isError) KalamaCrimson else ObsidianCardBorder),
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("status_banner_surface")
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = if (isError) Icons.Filled.Warning else Icons.Filled.CheckCircle,
+                    contentDescription = "Status",
+                    tint = if (isError) KalamaCrimson else KalamaEmerald,
+                    modifier = Modifier.size(15.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = statusMessage,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = TextPrimary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
         }
     }
