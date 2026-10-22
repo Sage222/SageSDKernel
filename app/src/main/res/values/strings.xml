@@ -1,0 +1,18 @@
+<resources>
+    <string name="app_name">KalamaForge</string>
+    <string name="soc_subtitle">SM8550-AC • Snapdragon 8 Gen 2 for Galaxy</string>
+    <string name="tab_dashboard">Partitions</string>
+    <string name="tab_frequencies">OPP Forge</string>
+    <string name="tab_signer">AVB &amp; Flash</string>
+    <string name="tab_failsafe">Fail-Safe</string>
+    <string name="root_status_checking">Probing Superuser &amp; Bootloader State…</string>
+    <string name="root_status_granted">ROOT UID 0 • UNLOCKED BOOTLOADER</string>
+    <string name="root_status_sandbox">UNROOTED SANDBOX • HARDWARE BLOCK SIMULATOR</string>
+    <string name="backup_kernel_btn">Backup Kernel Partitions</string>
+    <string name="extract_dtb_btn">Extract Kernel &amp; DTB OPP Table</string>
+    <string name="compile_patch_btn">Compile &amp; Sign Patched Image</string>
+    <string name="flash_patched_btn">Flash &amp; Verify Patched Kernel</string>
+    <string name="restore_stock_btn">Restore Original Stock Backup</string>
+    <string name="verify_partition_btn">Run SHA-256 Read-Back Verification</string>
+    <string name="arm_failsafe_btn">Arm Bootloop Watchdog &amp; Recovery Script</string>
+</resources>

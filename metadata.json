@@ -1,0 +1,6 @@
+{
+  "name": "KalamaForge",
+  "description": "Samsung Snapdragon 8 Gen 2 (SM8550) root kernel backup, boot/vendor_boot DTB OPP frequency patcher, AVB 2.0 image signer, and verified partition flasher with fail-safe recovery modes.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
