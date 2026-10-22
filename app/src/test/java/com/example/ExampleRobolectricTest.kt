@@ -39,6 +39,11 @@ class ExampleRobolectricTest {
     fun simpleKalamaForge_frequenciesVoltagesAndExportFlashWork() {
         composeTestRule.waitForIdle()
 
+        // Verify Startup Root Check status badge and Root Required advisory banner are displayed at app startup
+        composeTestRule.onNodeWithTag("root_status_badge").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("root_advisory_banner").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("retry_root_check_btn").assertIsDisplayed()
+
         // Verify Stock Frequencies & Add Overclock / Underclock controls are shown
         composeTestRule.onNodeWithTag("quick_add_underclock_btn").performScrollTo().assertIsDisplayed()
         composeTestRule.onNodeWithTag("quick_add_overclock_btn").performScrollTo().assertIsDisplayed()

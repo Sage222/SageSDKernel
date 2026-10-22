@@ -66,10 +66,13 @@ class RootKernelEngine(private val context: Context) {
         }
 
     suspend fun probeEnvironment(): DeviceHardwareEnvironment = withContext(Dispatchers.IO) {
-        ensureSandboxBlockPartitionsInitialized()
-
         val suResult = runShellCommand(listOf("su", "-c", "id"))
         val hasRoot = suResult?.first == 0 && suResult.second.contains("uid=0")
+
+        if (hasRoot) {
+            repairWorkspacePermissions()
+        }
+        ensureSandboxBlockPartitionsInitialized()
 
         val deviceProp = readSystemProp("ro.product.device").ifBlank { "dm3q" }
         val slotSuffix = readSystemProp("ro.boot.slot_suffix")
@@ -102,6 +105,73 @@ class RootKernelEngine(private val context: Context) {
             unameKernelVersion = unameOut,
             isHardwareBlockAccessible = canAccessHardwareBlock
         )
+    }
+
+    /**
+     * Repairs UNIX ownership (`chown`), directory traverse/read/write bits (`chmod 0777`),
+     * and Android SELinux MCS security labels (`restorecon -RF`) across the app's private
+     * workspace, and removes any legacy root-locked `*_repack` directories so the app never
+     * hits `open failed: EACCES (Permission denied)`.
+     */
+    fun repairWorkspacePermissions() {
+        val uid = android.os.Process.myUid()
+        val filesPath = context.filesDir.absolutePath
+        val workPath = workDir.absolutePath
+        val repairScript = buildString {
+            append("rm -rf '$workPath/boot_repack' '$workPath/vendor_boot_repack' 2>/dev/null || true; ")
+            append("chown -R $uid:$uid '$filesPath' 2>/dev/null || true; ")
+            append("chmod -R 0777 '$filesPath' 2>/dev/null || true; ")
+            append("restorecon -RF '$filesPath' 2>/dev/null || true")
+        }
+        runShellCommand(listOf("su", "-c", repairScript))
+    }
+
+    private fun buildFixFilePermissionsCmd(targetPath: String): String {
+        val uid = android.os.Process.myUid()
+        return "chown $uid:$uid '$targetPath' 2>/dev/null || true; " +
+            "chmod 0666 '$targetPath' 2>/dev/null || true; " +
+            "restorecon -F '$targetPath' 2>/dev/null || true"
+    }
+
+    private fun prepareAppOwnedFile(file: File, hasRoot: Boolean) {
+        try {
+            file.parentFile?.mkdirs()
+            if (file.exists() && (!file.canRead() || !file.canWrite())) {
+                if (hasRoot) {
+                    runShellCommand(listOf("su", "-c", "rm -f '${file.absolutePath}'"))
+                } else {
+                    file.delete()
+                }
+            }
+            if (!file.exists()) {
+                file.createNewFile()
+            }
+        } catch (_: Exception) {
+            if (hasRoot) {
+                repairWorkspacePermissions()
+                runCatching {
+                    file.parentFile?.mkdirs()
+                    if (!file.exists()) file.createNewFile()
+                }
+            }
+        }
+    }
+
+    private fun safeCopyFile(source: File, target: File, hasRoot: Boolean) {
+        prepareAppOwnedFile(target, hasRoot)
+        try {
+            source.copyTo(target, overwrite = true)
+        } catch (e: Exception) {
+            if (hasRoot) {
+                val cmd = "cat '${source.absolutePath}' > '${target.absolutePath}' && ${buildFixFilePermissionsCmd(target.absolutePath)}"
+                val res = runShellCommand(listOf("su", "-c", cmd))
+                if (res?.first != 0 || !target.exists() || target.length() == 0L) {
+                    throw e
+                }
+            } else {
+                throw e
+            }
+        }
     }
 
     private fun discoverMagiskbootBinary(): String? {
@@ -222,33 +292,41 @@ class RootKernelEngine(private val context: Context) {
         backupLabel: String,
         isOriginalStock: Boolean
     ): BackupOperationResult = withContext(Dispatchers.IO) {
+        if (env.hasRootAccess) {
+            repairWorkspacePermissions()
+        }
         val timestamp = System.currentTimeMillis()
         val sanitized = backupLabel.lowercase().replace(Regex("[^a-z0-9]+"), "_").trim('_')
         val outBoot = File(backupsDir, "boot_${sanitized}_$timestamp.img")
         val outVendorBoot = File(backupsDir, "vendor_boot_${sanitized}_$timestamp.img")
         val outVbmeta = File(backupsDir, "vbmeta_${sanitized}_$timestamp.img")
 
+        // Pre-create files as the app UID so they inherit proper app_data_file SELinux context
+        prepareAppOwnedFile(outBoot, env.hasRootAccess)
+        prepareAppOwnedFile(outVendorBoot, env.hasRootAccess)
+        prepareAppOwnedFile(outVbmeta, env.hasRootAccess)
+
         if (env.isHardwareBlockAccessible) {
-            val ddBoot = "dd if=${env.bootBlockPath} of=${outBoot.absolutePath} bs=4096 conv=fsync"
-            val ddVendor = "dd if=${env.vendorBootBlockPath} of=${outVendorBoot.absolutePath} bs=4096 conv=fsync"
-            val ddVbmeta = "dd if=${env.vbmetaBlockPath} of=${outVbmeta.absolutePath} bs=4096 conv=fsync"
+            val ddBoot = "dd if=${env.bootBlockPath} of='${outBoot.absolutePath}' bs=4096 conv=fsync && ${buildFixFilePermissionsCmd(outBoot.absolutePath)}"
+            val ddVendor = "dd if=${env.vendorBootBlockPath} of='${outVendorBoot.absolutePath}' bs=4096 conv=fsync && ${buildFixFilePermissionsCmd(outVendorBoot.absolutePath)}"
+            val ddVbmeta = "dd if=${env.vbmetaBlockPath} of='${outVbmeta.absolutePath}' bs=4096 conv=fsync && ${buildFixFilePermissionsCmd(outVbmeta.absolutePath)}"
 
             val r1 = runShellCommand(listOf("su", "-c", ddBoot))
-            if (r1?.first != 0 || !outBoot.exists()) {
-                File(env.bootBlockPath).takeIf { it.exists() }?.copyTo(outBoot, overwrite = true)
+            if (r1?.first != 0 || !outBoot.exists() || outBoot.length() == 0L) {
+                File(env.bootBlockPath).takeIf { it.exists() }?.let { safeCopyFile(it, outBoot, env.hasRootAccess) }
             }
             val r2 = runShellCommand(listOf("su", "-c", ddVendor))
-            if (r2?.first != 0 || !outVendorBoot.exists()) {
-                File(env.vendorBootBlockPath).takeIf { it.exists() }?.copyTo(outVendorBoot, overwrite = true)
+            if (r2?.first != 0 || !outVendorBoot.exists() || outVendorBoot.length() == 0L) {
+                File(env.vendorBootBlockPath).takeIf { it.exists() }?.let { safeCopyFile(it, outVendorBoot, env.hasRootAccess) }
             }
             val r3 = runShellCommand(listOf("su", "-c", ddVbmeta))
-            if (r3?.first != 0 || !outVbmeta.exists()) {
-                File(env.vbmetaBlockPath).takeIf { it.exists() }?.copyTo(outVbmeta, overwrite = true)
+            if (r3?.first != 0 || !outVbmeta.exists() || outVbmeta.length() == 0L) {
+                File(env.vbmetaBlockPath).takeIf { it.exists() }?.let { safeCopyFile(it, outVbmeta, env.hasRootAccess) }
             }
         } else {
-            File(env.bootBlockPath).copyTo(outBoot, overwrite = true)
-            File(env.vendorBootBlockPath).copyTo(outVendorBoot, overwrite = true)
-            File(env.vbmetaBlockPath).copyTo(outVbmeta, overwrite = true)
+            safeCopyFile(File(env.bootBlockPath), outBoot, env.hasRootAccess)
+            safeCopyFile(File(env.vendorBootBlockPath), outVendorBoot, env.hasRootAccess)
+            safeCopyFile(File(env.vbmetaBlockPath), outVbmeta, env.hasRootAccess)
         }
 
         if (!outVbmeta.exists() || outVbmeta.length() == 0L) {
@@ -280,6 +358,9 @@ class RootKernelEngine(private val context: Context) {
         stockVbmetaSource: File?,
         activeOppPoints: List<OppFrequencyPoint>
     ): ModifiedKernelBundle = withContext(Dispatchers.IO) {
+        if (env.hasRootAccess) {
+            repairWorkspacePermissions()
+        }
         ensureSandboxBlockPartitionsInitialized()
 
         val baseBoot = stockBootSource?.takeIf { it.exists() && it.length() > 0L }
@@ -293,9 +374,9 @@ class RootKernelEngine(private val context: Context) {
         val modVendorFile = File(workDir, "KalamaForge_Modified_vendor_boot.img")
         val modVbmetaFile = File(workDir, "KalamaForge_Modified_vbmeta.img")
 
-        baseBoot.copyTo(modBootFile, overwrite = true)
-        baseVendor.copyTo(modVendorFile, overwrite = true)
-        baseVbmeta.copyTo(modVbmetaFile, overwrite = true)
+        safeCopyFile(baseBoot, modBootFile, env.hasRootAccess)
+        safeCopyFile(baseVendor, modVendorFile, env.hasRootAccess)
+        safeCopyFile(baseVbmeta, modVbmetaFile, env.hasRootAccess)
 
         var usedMagiskboot = false
         var totalBlobs = 0
@@ -366,22 +447,31 @@ class RootKernelEngine(private val context: Context) {
         )
     }
 
+    /**
+     * Executes `magiskboot unpack` and `repack` inside `/data/local/tmp/kalamaforge_<workSubdirName>`
+     * (with `0777` directory permissions) and streams extracted DTB files into app-precreated
+     * staging files so the Android app process never encounters `EACCES (Permission denied)`
+     * from root-created files or `0666` directories.
+     */
     private fun unpackPatchAndRepackWithMagiskboot(
         magiskbootPath: String,
         sourceImg: File,
         workSubdirName: String,
         activePoints: List<OppFrequencyPoint>
     ): FdtPatchResult? {
-        val localRepackDir = File(workDir, workSubdirName).apply {
-            deleteRecursively()
-            mkdirs()
+        val rootTmpDir = "/data/local/tmp/kalamaforge_$workSubdirName"
+        val unpackCmd = buildString {
+            append("rm -rf '$rootTmpDir' && ")
+            append("mkdir -p '$rootTmpDir' && ")
+            append("chmod 0777 '$rootTmpDir' && ")
+            append("cp -f '${sourceImg.absolutePath}' '$rootTmpDir/orig.img' && ")
+            append("cd '$rootTmpDir' && ")
+            append("('$magiskbootPath' unpack -h orig.img || '$magiskbootPath' unpack orig.img) && ")
+            append("chmod -R 0777 '$rootTmpDir'")
         }
-        val localWorkImg = File(localRepackDir, "orig.img")
-        sourceImg.copyTo(localWorkImg, overwrite = true)
-
-        val unpackCmd = "cd ${localRepackDir.absolutePath} && $magiskbootPath unpack -h orig.img && chmod -R 666 ${localRepackDir.absolutePath}"
         val unpackRes = runShellCommand(listOf("su", "-c", unpackCmd))
         if (unpackRes?.first != 0) {
+            runShellCommand(listOf("su", "-c", "rm -rf '$rootTmpDir'"))
             return null
         }
 
@@ -389,23 +479,44 @@ class RootKernelEngine(private val context: Context) {
         var hzCount = 0
         var uvCount = 0
 
-        // Patch any extracted dtb / kernel_dtb / extra FDT files
-        for (dtbName in listOf("dtb", "kernel_dtb", "extra")) {
-            val dtbFile = File(localRepackDir, dtbName)
-            if (dtbFile.exists() && dtbFile.length() > 64L) {
-                val res = FdtBinaryPatcher.patchMultiDtbFile(dtbFile, activePoints)
-                blobs += res.dtbBlobsFound
-                hzCount += res.oppHzPatchedCount
-                uvCount += res.oppMicrovoltPatchedCount
+        // Patch any extracted dtb / kernel_dtb / extra FDT files via app-owned staging files
+        for (dtbName in listOf("dtb", "kernel_dtb", "extra", "kernel")) {
+            val checkDtb = runShellCommand(listOf("su", "-c", "test -s '$rootTmpDir/$dtbName' && echo PRESENT"))
+            if (checkDtb?.first == 0 && checkDtb.second.contains("PRESENT")) {
+                // Only inspect raw "kernel" if no dedicated dtb/kernel_dtb blob was found yet
+                if (dtbName == "kernel" && blobs > 0) continue
+
+                val stagedDtb = File(workDir, "staged_${workSubdirName}_$dtbName")
+                prepareAppOwnedFile(stagedDtb, hasRoot = true)
+
+                val pullCmd = "cat '$rootTmpDir/$dtbName' > '${stagedDtb.absolutePath}' && ${buildFixFilePermissionsCmd(stagedDtb.absolutePath)}"
+                val pullRes = runShellCommand(listOf("su", "-c", pullCmd))
+
+                if (pullRes?.first == 0 && stagedDtb.exists() && stagedDtb.length() > 64L) {
+                    val res = FdtBinaryPatcher.patchMultiDtbFile(stagedDtb, activePoints)
+                    if (res.dtbBlobsFound > 0) {
+                        blobs += res.dtbBlobsFound
+                        hzCount += res.oppHzPatchedCount
+                        uvCount += res.oppMicrovoltPatchedCount
+                        val pushCmd = "cat '${stagedDtb.absolutePath}' > '$rootTmpDir/$dtbName' && chmod 0666 '$rootTmpDir/$dtbName'"
+                        runShellCommand(listOf("su", "-c", pushCmd))
+                    }
+                }
+                runCatching { stagedDtb.delete() }
             }
         }
 
-        val repackCmd = "cd ${localRepackDir.absolutePath} && $magiskbootPath repack orig.img repacked.img && chmod 666 repacked.img"
+        val repackCmd = buildString {
+            append("cd '$rootTmpDir' && ")
+            append("'$magiskbootPath' repack orig.img repacked.img && ")
+            append("test -s '$rootTmpDir/repacked.img' && ")
+            append("cat '$rootTmpDir/repacked.img' > '${sourceImg.absolutePath}' && ")
+            append(buildFixFilePermissionsCmd(sourceImg.absolutePath))
+        }
         val repackRes = runShellCommand(listOf("su", "-c", repackCmd))
-        val repackedFile = File(localRepackDir, "repacked.img")
+        runShellCommand(listOf("su", "-c", "rm -rf '$rootTmpDir'"))
 
-        if (repackRes?.first == 0 && repackedFile.exists() && repackedFile.length() > 4096L) {
-            repackedFile.copyTo(sourceImg, overwrite = true)
+        if (repackRes?.first == 0 && sourceImg.exists() && sourceImg.length() > 4096L) {
             return FdtPatchResult(
                 dtbBlobsFound = blobs,
                 oppHzPatchedCount = hzCount,
@@ -485,25 +596,33 @@ class RootKernelEngine(private val context: Context) {
         isOriginalStock: Boolean,
         oppSummary: String
     ): ExportedPackageInfo = withContext(Dispatchers.IO) {
+        if (env.hasRootAccess) {
+            repairWorkspacePermissions()
+        }
         val prefix = if (isOriginalStock) "KalamaForge_Original_Stock" else "KalamaForge_Modified_OC_UC"
-        val outDir = exportDirectory
+        val stageExportDir = File(workDir, "exports").apply { mkdirs() }
+        val publicOutDir = exportDirectory
 
-        val outFile = when (format) {
+        val stagedFile = when (format) {
             ExportFormat.RAW_BOOT_IMG -> {
-                val target = File(outDir, "${prefix}_boot.img")
-                bootFile.copyTo(target, overwrite = true)
-                // Also copy vendor_boot.img and vbmeta.img alongside boot.img for convenience
+                val target = File(stageExportDir, "${prefix}_boot.img")
+                safeCopyFile(bootFile, target, env.hasRootAccess)
                 if (vendorBootFile.exists()) {
-                    vendorBootFile.copyTo(File(outDir, "${prefix}_vendor_boot.img"), overwrite = true)
+                    val vTarget = File(stageExportDir, "${prefix}_vendor_boot.img")
+                    safeCopyFile(vendorBootFile, vTarget, env.hasRootAccess)
+                    publishToPublicExportDir(vTarget, publicOutDir, env.hasRootAccess)
                 }
                 if (vbmetaFile != null && vbmetaFile.exists()) {
-                    vbmetaFile.copyTo(File(outDir, "${prefix}_vbmeta.img"), overwrite = true)
+                    val vbTarget = File(stageExportDir, "${prefix}_vbmeta.img")
+                    safeCopyFile(vbmetaFile, vbTarget, env.hasRootAccess)
+                    publishToPublicExportDir(vbTarget, publicOutDir, env.hasRootAccess)
                 }
                 target
             }
 
             ExportFormat.TWRP_ZIP -> {
-                val target = File(outDir, "${prefix}_TWRP_Flashable.zip")
+                val target = File(stageExportDir, "${prefix}_TWRP_Flashable.zip")
+                prepareAppOwnedFile(target, env.hasRootAccess)
                 createTwrpFlashableZip(
                     zipFile = target,
                     bootFile = bootFile,
@@ -518,7 +637,8 @@ class RootKernelEngine(private val context: Context) {
             }
 
             ExportFormat.ODIN_TAR -> {
-                val target = File(outDir, "${prefix}_Odin_AP.tar")
+                val target = File(stageExportDir, "${prefix}_Odin_AP.tar")
+                prepareAppOwnedFile(target, env.hasRootAccess)
                 createOdinPosixTar(
                     tarFile = target,
                     entries = buildList {
@@ -535,14 +655,39 @@ class RootKernelEngine(private val context: Context) {
             }
         }
 
+        val sha = sha256File(stagedFile)
+        val sizeBytes = stagedFile.length()
+        val finalPublishedPath = publishToPublicExportDir(stagedFile, publicOutDir, env.hasRootAccess)
+
         ExportedPackageInfo(
             title = "${if (isOriginalStock) "Original Stock" else "Modified Kernel + vbmeta"} • ${format.label}",
             format = format,
-            filePath = outFile.absolutePath,
-            sizeBytes = outFile.length(),
-            sha256Checksum = sha256File(outFile),
+            filePath = finalPublishedPath,
+            sizeBytes = sizeBytes,
+            sha256Checksum = sha,
             isOriginalStock = isOriginalStock
         )
+    }
+
+    private fun publishToPublicExportDir(stagedFile: File, publicOutDir: File, hasRoot: Boolean): String {
+        if (stagedFile.parentFile?.absolutePath == publicOutDir.absolutePath) {
+            return stagedFile.absolutePath
+        }
+        val destFile = File(publicOutDir, stagedFile.name)
+        return try {
+            publicOutDir.mkdirs()
+            if (destFile.exists()) destFile.delete()
+            stagedFile.copyTo(destFile, overwrite = true)
+            destFile.absolutePath
+        } catch (_: Exception) {
+            if (hasRoot) {
+                val cmd = "mkdir -p '${publicOutDir.absolutePath}' && cp -f '${stagedFile.absolutePath}' '${destFile.absolutePath}' && chmod 0666 '${destFile.absolutePath}'"
+                val res = runShellCommand(listOf("su", "-c", cmd))
+                if (res?.first == 0) destFile.absolutePath else stagedFile.absolutePath
+            } else {
+                stagedFile.absolutePath
+            }
+        }
     }
 
     suspend fun flashKernelAndVerify(
@@ -553,6 +698,9 @@ class RootKernelEngine(private val context: Context) {
         sourceVbmetaFile: File?,
         expectedStockBootSize: Long
     ): VerificationReport = withContext(Dispatchers.IO) {
+        if (env.hasRootAccess) {
+            repairWorkspacePermissions()
+        }
         if (expectedStockBootSize > 0L && sourceBootFile.length() != expectedStockBootSize) {
             throw IllegalStateException(
                 "Pre-Flash Guard Blocked Flash: Modified boot.img size (${sourceBootFile.length()} B) does not match Stock partition dump (${expectedStockBootSize} B)!"
@@ -568,51 +716,53 @@ class RootKernelEngine(private val context: Context) {
 
         if (env.isHardwareBlockAccessible) {
             if (sourceVbmetaFile != null && sourceVbmetaFile.exists()) {
-                val flashVbmetaCmd = "dd if=${sourceVbmetaFile.absolutePath} of=${env.vbmetaBlockPath} bs=4096 conv=fsync"
+                val flashVbmetaCmd = "dd if='${sourceVbmetaFile.absolutePath}' of=${env.vbmetaBlockPath} bs=4096 conv=fsync"
                 runShellCommand(listOf("su", "-c", flashVbmetaCmd))
             }
-            val flashBootCmd = "dd if=${sourceBootFile.absolutePath} of=${env.bootBlockPath} bs=4096 conv=fsync"
+            val flashBootCmd = "dd if='${sourceBootFile.absolutePath}' of=${env.bootBlockPath} bs=4096 conv=fsync"
             val r1 = runShellCommand(listOf("su", "-c", flashBootCmd))
             if (r1?.first != 0) {
-                File(env.bootBlockPath).takeIf { it.exists() }?.let { sourceBootFile.copyTo(it, overwrite = true) }
+                File(env.bootBlockPath).takeIf { it.exists() }?.let { safeCopyFile(sourceBootFile, it, env.hasRootAccess) }
             }
             if (sourceVendorBootFile.exists()) {
-                val flashVendorCmd = "dd if=${sourceVendorBootFile.absolutePath} of=${env.vendorBootBlockPath} bs=4096 conv=fsync"
+                val flashVendorCmd = "dd if='${sourceVendorBootFile.absolutePath}' of=${env.vendorBootBlockPath} bs=4096 conv=fsync"
                 runShellCommand(listOf("su", "-c", flashVendorCmd))
             }
         } else {
             if (sourceVbmetaFile != null && sourceVbmetaFile.exists()) {
-                sourceVbmetaFile.copyTo(File(env.vbmetaBlockPath), overwrite = true)
+                safeCopyFile(sourceVbmetaFile, File(env.vbmetaBlockPath), env.hasRootAccess)
             }
-            sourceBootFile.copyTo(File(env.bootBlockPath), overwrite = true)
+            safeCopyFile(sourceBootFile, File(env.bootBlockPath), env.hasRootAccess)
             if (sourceVendorBootFile.exists()) {
-                sourceVendorBootFile.copyTo(File(env.vendorBootBlockPath), overwrite = true)
+                safeCopyFile(sourceVendorBootFile, File(env.vendorBootBlockPath), env.hasRootAccess)
             }
         }
 
         val readBackFile = File(workDir, "verify_readback_boot.img")
+        prepareAppOwnedFile(readBackFile, env.hasRootAccess)
         val countBlocks = (sourceBootFile.length() / 4096L).coerceAtLeast(1L)
         if (env.isHardwareBlockAccessible) {
-            val vr = runShellCommand(
-                listOf("su", "-c", "dd if=${env.bootBlockPath} of=${readBackFile.absolutePath} bs=4096 count=$countBlocks")
-            )
-            if (vr?.first != 0 || !readBackFile.exists()) {
-                File(env.bootBlockPath).copyTo(readBackFile, overwrite = true)
+            val readCmd = "dd if=${env.bootBlockPath} of='${readBackFile.absolutePath}' bs=4096 count=$countBlocks && ${buildFixFilePermissionsCmd(readBackFile.absolutePath)}"
+            val vr = runShellCommand(listOf("su", "-c", readCmd))
+            if (vr?.first != 0 || !readBackFile.exists() || readBackFile.length() == 0L) {
+                safeCopyFile(File(env.bootBlockPath), readBackFile, env.hasRootAccess)
             }
         } else {
-            File(env.bootBlockPath).copyTo(readBackFile, overwrite = true)
+            safeCopyFile(File(env.bootBlockPath), readBackFile, env.hasRootAccess)
         }
 
         val readBackSha = sha256File(readBackFile)
-        val hasValidMagic = RandomAccessFile(readBackFile, "r").use { raf ->
-            if (raf.length() >= 8L) {
-                val magic = ByteArray(8)
-                raf.readFully(magic)
-                String(magic, Charsets.US_ASCII) == "ANDROID!"
-            } else {
-                false
+        val hasValidMagic = runCatching {
+            RandomAccessFile(readBackFile, "r").use { raf ->
+                if (raf.length() >= 8L) {
+                    val magic = ByteArray(8)
+                    raf.readFully(magic)
+                    String(magic, Charsets.US_ASCII) == "ANDROID!"
+                } else {
+                    false
+                }
             }
-        }
+        }.getOrDefault(false)
 
         VerificationReport(
             actionTitle = actionTitle,
@@ -831,6 +981,23 @@ class RootKernelEngine(private val context: Context) {
     }
 
     fun sha256File(file: File): String {
+        return try {
+            computeSha256Stream(file)
+        } catch (_: Exception) {
+            runShellCommand(listOf("su", "-c", buildFixFilePermissionsCmd(file.absolutePath)))
+            runCatching { computeSha256Stream(file) }.getOrElse {
+                val rootSha = runShellCommand(listOf("su", "-c", "sha256sum '${file.absolutePath}'"))
+                    ?.second?.trim()?.split(Regex("\\s+"))?.firstOrNull()
+                if (!rootSha.isNullOrBlank() && rootSha.length >= 32) {
+                    rootSha
+                } else {
+                    "0".repeat(64)
+                }
+            }
+        }
+    }
+
+    private fun computeSha256Stream(file: File): String {
         val md = MessageDigest.getInstance("SHA-256")
         file.inputStream().use { fis ->
             val buf = ByteArray(65536)

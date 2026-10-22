@@ -10,19 +10,22 @@ The compiled APK is tracked directly in this repository under [`releases/KalamaF
 
 | File | Application ID | SHA-256 Checksum |
 | :--- | :--- | :--- |
-| [`releases/KalamaForge-sm8550-v1.0.apk`](releases/KalamaForge-sm8550-v1.0.apk) | `com.aistudio.kalamaforge.sm8550` | `d542a129c9aa6e4d61ffe00ff5466e2ac44efcbdd0303c49e2b4f23314fe9f26` |
+| [`releases/KalamaForge-sm8550-v1.0.apk`](releases/KalamaForge-sm8550-v1.0.apk) | `com.aistudio.kalamaforge.sm8550` | `e9b0b6c856a2dcefd2e736d7d401814d7b019c2568181a189ca6c8b9466dcac4` |
 
 ---
 
 ## 🔧 How Kernel & DTB Patching Works (`magiskboot` + `FdtBinaryPatcher`)
 
-1. **On-Device `magiskboot` Unpack & Repack:**
+1. **Startup Root Check & Workspace Permission Repair (`su`):**
+   - Verifies Superuser (`su -c id`) access at app startup and advises the user when Root is required to proceed (with one-tap **Verify / Grant Root Access (`su`)** re-probing).
+   - Automatically repairs app workspace ownership (`chown`), directory traverse permissions (`chmod 0777`), and Android 13/14 SELinux MCS security labels (`restorecon -RF`), while running `magiskboot unpack`/`repack` inside `/data/local/tmp` so the app never encounters `open failed: EACCES (Permission denied)`.
+2. **On-Device `magiskboot` Unpack & Repack:**
    - Automatically detects `magiskboot` (`/data/adb/magisk/magiskboot`, `/data/adb/ksu/bin/magiskboot`, or `/data/adb/ap/bin/magiskboot`).
    - Runs `magiskboot unpack -h` on your backed-up **`vendor_boot.img`** and **`boot.img`** to cleanly decompress the LZ4/GZIP `dtb` and `kernel` payloads.
-2. **Real FDT (`0xD00DFEED`) Binary `opp-hz` & `opp-microvolt` Patching (`FdtBinaryPatcher`):**
+3. **Real FDT (`0xD00DFEED`) Binary `opp-hz` & `opp-microvolt` Patching (`FdtBinaryPatcher`):**
    - Walks the uncompressed Flattened Device Tree (`0xD00DFEED`) `dt_struct` token stream (`FDT_BEGIN_NODE`, `FDT_PROP`) and `dt_strings` table.
    - Patches `opp-hz` (`uint64` big-endian Hz) and `opp-microvolt` (`uint32` big-endian `uV` `<target min max>`) directly inside the device tree blobs before running `magiskboot repack` and padding to 100% stock partition byte length.
-3. **Automatic `vbmeta.img` Verification-Disable Patch (`flags = 0x03`):**
+4. **Automatic `vbmeta.img` Verification-Disable Patch (`flags = 0x03`):**
    - Backs up `/dev/block/by-name/vbmeta` and patches byte offset `123` (`0x03`: `DISABLE_VERITY | DISABLE_VERIFICATION`) when flashing or exporting **Odin `.tar`** and **TWRP `.zip`** packages so Samsung's bootloader (`RP SWREV B5 / K6 S5`) boots cleanly without `CURRENT BINARY: Custom (0xF82)`.
 
 ---

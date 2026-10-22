@@ -74,6 +74,15 @@ import com.example.ui.theme.ObsidianSurfaceVariant
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 
+import androidx.compose.foundation.clickable
+import androidx.compose.material.icons.filled.Security
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import com.example.ui.theme.KalamaAmber
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -211,8 +220,11 @@ fun KalamaForgeApp(
                 ) {
                     SimpleTopHeader(
                         deviceName = uiState.environment?.detectedDeviceCode ?: "Samsung Snapdragon 8 Gen 2",
+                        isCheckingRoot = uiState.isCheckingRoot,
+                        hasRootAccess = uiState.environment?.hasRootAccess == true,
                         statusMessage = uiState.statusMessage,
                         isError = uiState.isError,
+                        onRetryRootCheck = { viewModel.retryStartupRootCheck() },
                         onResetAllStock = { viewModel.resetAllClustersToStock() }
                     )
 
@@ -223,6 +235,15 @@ fun KalamaForgeApp(
                         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
                         verticalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
+                        item {
+                            StartupRootCheckCard(
+                                isCheckingRoot = uiState.isCheckingRoot,
+                                hasRootAccess = uiState.environment?.hasRootAccess == true,
+                                magiskbootPath = uiState.environment?.magiskbootPath,
+                                onRetryRootCheck = { viewModel.retryStartupRootCheck() }
+                            )
+                        }
+
                         item {
                             when (uiState.selectedTab) {
                                 SimpleTab.FREQUENCIES -> {
@@ -276,10 +297,103 @@ fun KalamaForgeApp(
 }
 
 @Composable
+private fun StartupRootCheckCard(
+    isCheckingRoot: Boolean,
+    hasRootAccess: Boolean,
+    magiskbootPath: String?,
+    onRetryRootCheck: () -> Unit
+) {
+    val containerColor = when {
+        hasRootAccess -> Color(0xFF07261A)
+        isCheckingRoot -> Color(0xFF2B1F06)
+        else -> Color(0xFF330C12)
+    }
+    val borderColor = when {
+        hasRootAccess -> KalamaEmerald
+        isCheckingRoot -> KalamaAmber
+        else -> KalamaCrimson
+    }
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("root_advisory_banner"),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = containerColor),
+        border = BorderStroke(1.5.dp, borderColor)
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = if (hasRootAccess) Icons.Filled.CheckCircle else Icons.Filled.Security,
+                    contentDescription = "Startup Root Check Status",
+                    tint = borderColor,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = when {
+                        hasRootAccess -> "STARTUP ROOT CHECK PASSED (uid=0)"
+                        isCheckingRoot -> "CHECKING ROOT ACCESS AT STARTUP • ROOT REQUIRED"
+                        else -> "ROOT ACCESS REQUIRED TO PROCEED"
+                    },
+                    style = MaterialTheme.typography.titleSmall,
+                    color = borderColor,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = when {
+                    hasRootAccess -> {
+                        val mbInfo = magiskbootPath ?: "built-in FDT binary patcher"
+                        "Superuser (su) access verified and workspace permissions repaired. Ready to back up, unpack ($mbInfo), and flash SM8550 kernel partitions."
+                    }
+                    else -> {
+                        "Root (su) is required to proceed with reading, backing up, unpacking (magiskboot), and flashing your Samsung Snapdragon 8 Gen 2 kernel partitions (boot, vendor_boot, and vbmeta). Please grant Superuser access in Magisk, KernelSU, or APatch."
+                    }
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = TextPrimary
+            )
+            if (!hasRootAccess) {
+                Spacer(modifier = Modifier.height(10.dp))
+                Button(
+                    onClick = onRetryRootCheck,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isCheckingRoot) KalamaAmber else KalamaCrimson,
+                        contentColor = if (isCheckingRoot) Color(0xFF261900) else Color.White
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .testTag("retry_root_check_btn")
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Security,
+                        contentDescription = "Verify Root Access",
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Verify / Grant Root Access (su) to Proceed",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun SimpleTopHeader(
     deviceName: String,
+    isCheckingRoot: Boolean,
+    hasRootAccess: Boolean,
     statusMessage: String,
     isError: Boolean,
+    onRetryRootCheck: () -> Unit,
     onResetAllStock: () -> Unit
 ) {
     Column(
@@ -293,7 +407,10 @@ private fun SimpleTopHeader(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.weight(1f)
+            ) {
                 Box(
                     modifier = Modifier
                         .size(38.dp)
@@ -316,13 +433,57 @@ private fun SimpleTopHeader(
                         color = TextPrimary,
                         fontWeight = FontWeight.Bold
                     )
-                    Text(
-                        text = deviceName,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = KalamaCyan
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = deviceName,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = KalamaCyan,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = when {
+                                isCheckingRoot -> Color(0xFF332400)
+                                hasRootAccess -> Color(0xFF06331E)
+                                else -> Color(0xFF3B0A11)
+                            },
+                            border = BorderStroke(
+                                1.dp,
+                                when {
+                                    isCheckingRoot -> KalamaAmber
+                                    hasRootAccess -> KalamaEmerald
+                                    else -> KalamaCrimson
+                                }
+                            ),
+                            modifier = Modifier
+                                .clickable { onRetryRootCheck() }
+                                .testTag("root_status_badge")
+                        ) {
+                            Text(
+                                text = when {
+                                    isCheckingRoot -> "CHECKING ROOT..."
+                                    hasRootAccess -> "ROOT GRANTED"
+                                    else -> "ROOT REQUIRED"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = when {
+                                    isCheckingRoot -> KalamaAmber
+                                    hasRootAccess -> KalamaEmerald
+                                    else -> KalamaCrimson
+                                },
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
                 }
             }
+
+            Spacer(modifier = Modifier.width(8.dp))
 
             OutlinedButton(
                 onClick = onResetAllStock,

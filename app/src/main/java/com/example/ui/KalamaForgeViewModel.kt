@@ -32,8 +32,10 @@ enum class SimpleTab {
 data class KalamaUiState(
     val selectedTab: SimpleTab = SimpleTab.FREQUENCIES,
     val environment: DeviceHardwareEnvironment? = null,
+    val isCheckingRoot: Boolean = true,
+    val showRootRequiredDialog: Boolean = false,
     val isBusy: Boolean = false,
-    val statusMessage: String = "Stock frequencies loaded • Adjust voltages or add Overclock / Underclock steps below",
+    val statusMessage: String = "Checking Root (su) access • Grant Superuser prompt if requested...",
     val isError: Boolean = false,
     val selectedCluster: KalamaCluster = KalamaCluster.PRIME,
     val oppPoints: List<OppFrequencyPoint> = KalamaDefaultOppTable.buildStockPoints(),
@@ -59,48 +61,97 @@ class KalamaForgeViewModel(application: Application) : AndroidViewModel(applicat
         initializeStockKernelBackupAndTable()
     }
 
+    fun retryStartupRootCheck() {
+        initializeStockKernelBackupAndTable()
+    }
+
+    fun dismissRootRequiredDialog() {
+        _uiState.update { it.copy(showRootRequiredDialog = false) }
+    }
+
     private fun initializeStockKernelBackupAndTable() {
         viewModelScope.launch {
-            _uiState.update { it.copy(isBusy = true) }
-            val env = engine.probeEnvironment()
-            val liveStock = engine.readLiveOrDefaultStockOppTable()
-            detectedStockTable = liveStock
-
-            var primaryStock = repository.getPrimaryStockBackup()
-            if (primaryStock == null) {
-                val backupRes = engine.backupKernelPartitions(
-                    env = env,
-                    backupLabel = "Original Stock Kernel",
-                    isOriginalStock = true
-                )
-                val entity = KernelBackupEntity(
-                    label = "Original Stock Kernel (boot + vendor_boot + vbmeta)",
-                    partitionName = "boot + vendor_boot + vbmeta",
-                    blockDevicePath = env.bootBlockPath,
-                    localFilePath = backupRes.bootFile.absolutePath,
-                    vendorBootFilePath = backupRes.vendorBootFile.absolutePath,
-                    vbmetaFilePath = backupRes.vbmetaFile.absolutePath,
-                    sha256Checksum = backupRes.bootSha256,
-                    vendorBootSha256 = backupRes.vendorBootSha256,
-                    vbmetaSha256 = backupRes.vbmetaSha256,
-                    sizeBytes = backupRes.totalSizeBytes,
-                    kernelVersion = env.unameKernelVersion,
-                    headerVersion = 4,
-                    isOriginalStock = true,
-                    isSignedAvb = true,
-                    avbKeyType = "Stock AVB 2.0",
-                    oppSummary = "Stock 307 MHz – 3360 MHz • Adreno 740 @ 719 MHz"
-                )
-                repository.saveBackup(entity)
-            }
-            val mbStatus = if (env.magiskbootPath != null) "magiskboot ready (${env.magiskbootPath})" else "FDT binary patcher ready"
             _uiState.update {
                 it.copy(
-                    environment = env,
-                    oppPoints = liveStock,
-                    isBusy = false,
-                    statusMessage = "Stock boot + vendor_boot + vbmeta backed up • $mbStatus"
+                    isCheckingRoot = true,
+                    isBusy = true,
+                    statusMessage = "Checking Root (su) access • Grant Superuser permission in Magisk / KernelSU..."
                 )
+            }
+            try {
+                val env = engine.probeEnvironment()
+                val liveStock = engine.readLiveOrDefaultStockOppTable()
+                detectedStockTable = liveStock
+
+                val primaryStock = repository.getPrimaryStockBackup()
+                val stockBootExists = primaryStock?.localFilePath?.let { File(it).exists() && File(it).length() > 0L } == true
+                if (primaryStock == null || !stockBootExists) {
+                    val backupRes = engine.backupKernelPartitions(
+                        env = env,
+                        backupLabel = "Original Stock Kernel",
+                        isOriginalStock = true
+                    )
+                    val entity = KernelBackupEntity(
+                        label = "Original Stock Kernel (boot + vendor_boot + vbmeta)",
+                        partitionName = "boot + vendor_boot + vbmeta",
+                        blockDevicePath = env.bootBlockPath,
+                        localFilePath = backupRes.bootFile.absolutePath,
+                        vendorBootFilePath = backupRes.vendorBootFile.absolutePath,
+                        vbmetaFilePath = backupRes.vbmetaFile.absolutePath,
+                        sha256Checksum = backupRes.bootSha256,
+                        vendorBootSha256 = backupRes.vendorBootSha256,
+                        vbmetaSha256 = backupRes.vbmetaSha256,
+                        sizeBytes = backupRes.totalSizeBytes,
+                        kernelVersion = env.unameKernelVersion,
+                        headerVersion = 4,
+                        isOriginalStock = true,
+                        isSignedAvb = true,
+                        avbKeyType = "Stock AVB 2.0",
+                        oppSummary = "Stock 307 MHz – 3360 MHz • Adreno 740 @ 719 MHz"
+                    )
+                    repository.saveBackup(entity)
+                }
+
+                if (env.hasRootAccess) {
+                    val mbStatus = if (env.magiskbootPath != null) {
+                        "magiskboot ready (${env.magiskbootPath})"
+                    } else {
+                        "FDT binary patcher ready"
+                    }
+                    _uiState.update {
+                        it.copy(
+                            environment = env,
+                            oppPoints = liveStock,
+                            isCheckingRoot = false,
+                            showRootRequiredDialog = false,
+                            isBusy = false,
+                            isError = false,
+                            statusMessage = "Root Verified (uid=0) • Stock boot + vendor_boot + vbmeta backed up • $mbStatus"
+                        )
+                    }
+                } else {
+                    _uiState.update {
+                        it.copy(
+                            environment = env,
+                            oppPoints = liveStock,
+                            isCheckingRoot = false,
+                            showRootRequiredDialog = true,
+                            isBusy = false,
+                            isError = true,
+                            statusMessage = "Root Access Required (su not granted) • Grant Superuser in Magisk / KernelSU to proceed"
+                        )
+                    }
+                }
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        isCheckingRoot = false,
+                        showRootRequiredDialog = true,
+                        isBusy = false,
+                        isError = true,
+                        statusMessage = "Root check error: ${e.message ?: "Root (su) is required to proceed"}"
+                    )
+                }
             }
         }
     }
@@ -285,115 +336,155 @@ class KalamaForgeViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
+    private suspend fun ensureFreshEnvironment(): DeviceHardwareEnvironment {
+        val current = _uiState.value.environment
+        if (current != null && current.hasRootAccess) {
+            return current
+        }
+        val probed = engine.probeEnvironment()
+        _uiState.update { it.copy(environment = probed, showRootRequiredDialog = !probed.hasRootAccess) }
+        return probed
+    }
+
     fun backupOriginalStockKernelNow() {
-        val env = _uiState.value.environment ?: return
         viewModelScope.launch {
             _uiState.update { it.copy(isBusy = true, isError = false) }
-            val backupRes = engine.backupKernelPartitions(
-                env = env,
-                backupLabel = "Original Stock Kernel",
-                isOriginalStock = true
-            )
-            val entity = KernelBackupEntity(
-                label = "Original Stock Kernel (${backups.value.size + 1})",
-                partitionName = "boot + vendor_boot + vbmeta",
-                blockDevicePath = env.bootBlockPath,
-                localFilePath = backupRes.bootFile.absolutePath,
-                vendorBootFilePath = backupRes.vendorBootFile.absolutePath,
-                vbmetaFilePath = backupRes.vbmetaFile.absolutePath,
-                sha256Checksum = backupRes.bootSha256,
-                vendorBootSha256 = backupRes.vendorBootSha256,
-                vbmetaSha256 = backupRes.vbmetaSha256,
-                sizeBytes = backupRes.totalSizeBytes,
-                kernelVersion = env.unameKernelVersion,
-                headerVersion = 4,
-                isOriginalStock = backups.value.none { it.isOriginalStock },
-                isSignedAvb = true,
-                avbKeyType = "Stock AVB 2.0",
-                oppSummary = "Stock 307 MHz – 3360 MHz"
-            )
-            repository.saveBackup(entity)
-            _uiState.update {
-                it.copy(
-                    isBusy = false,
-                    statusMessage = "Backed up Stock boot + vendor_boot + vbmeta (${backupRes.bootSha256.take(16)}...)"
+            try {
+                val env = ensureFreshEnvironment()
+                val backupRes = engine.backupKernelPartitions(
+                    env = env,
+                    backupLabel = "Original Stock Kernel",
+                    isOriginalStock = true
                 )
+                val entity = KernelBackupEntity(
+                    label = "Original Stock Kernel (${backups.value.size + 1})",
+                    partitionName = "boot + vendor_boot + vbmeta",
+                    blockDevicePath = env.bootBlockPath,
+                    localFilePath = backupRes.bootFile.absolutePath,
+                    vendorBootFilePath = backupRes.vendorBootFile.absolutePath,
+                    vbmetaFilePath = backupRes.vbmetaFile.absolutePath,
+                    sha256Checksum = backupRes.bootSha256,
+                    vendorBootSha256 = backupRes.vendorBootSha256,
+                    vbmetaSha256 = backupRes.vbmetaSha256,
+                    sizeBytes = backupRes.totalSizeBytes,
+                    kernelVersion = env.unameKernelVersion,
+                    headerVersion = 4,
+                    isOriginalStock = backups.value.none { it.isOriginalStock },
+                    isSignedAvb = true,
+                    avbKeyType = "Stock AVB 2.0",
+                    oppSummary = "Stock 307 MHz – 3360 MHz"
+                )
+                repository.saveBackup(entity)
+                _uiState.update {
+                    it.copy(
+                        isBusy = false,
+                        statusMessage = "Backed up Stock boot + vendor_boot + vbmeta (${backupRes.bootSha256.take(16)}...)"
+                    )
+                }
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        isBusy = false,
+                        isError = true,
+                        statusMessage = "Backup failed: ${e.message}"
+                    )
+                }
             }
         }
     }
 
     fun exportOriginalStockKernel(format: ExportFormat) {
-        val env = _uiState.value.environment ?: return
         viewModelScope.launch {
             _uiState.update { it.copy(isBusy = true, isError = false) }
-            val stock = repository.getPrimaryStockBackup() ?: backups.value.firstOrNull()
-            if (stock == null) {
-                _uiState.update {
-                    it.copy(isBusy = false, isError = true, statusMessage = "No Stock Backup found yet")
+            try {
+                val env = ensureFreshEnvironment()
+                val stock = repository.getPrimaryStockBackup() ?: backups.value.firstOrNull()
+                if (stock == null) {
+                    _uiState.update {
+                        it.copy(isBusy = false, isError = true, statusMessage = "No Stock Backup found yet")
+                    }
+                    return@launch
                 }
-                return@launch
-            }
-            val exported = engine.exportKernelArtifact(
-                env = env,
-                bootFile = File(stock.localFilePath),
-                vendorBootFile = File(stock.vendorBootFilePath),
-                vbmetaFile = stock.vbmetaFilePath.takeIf { it.isNotBlank() }?.let { File(it) },
-                format = format,
-                isOriginalStock = true,
-                oppSummary = "Original Stock SM8550 Kernel"
-            )
-            _uiState.update {
-                it.copy(
-                    isBusy = false,
-                    lastExportedPackage = exported,
-                    exportedHistory = (listOf(exported) + it.exportedHistory).take(8),
-                    statusMessage = "Extracted Original Kernel -> ${exported.filePath}"
+                val exported = engine.exportKernelArtifact(
+                    env = env,
+                    bootFile = File(stock.localFilePath),
+                    vendorBootFile = File(stock.vendorBootFilePath),
+                    vbmetaFile = stock.vbmetaFilePath.takeIf { it.isNotBlank() }?.let { File(it) },
+                    format = format,
+                    isOriginalStock = true,
+                    oppSummary = "Original Stock SM8550 Kernel"
                 )
+                _uiState.update {
+                    it.copy(
+                        isBusy = false,
+                        lastExportedPackage = exported,
+                        exportedHistory = (listOf(exported) + it.exportedHistory).take(8),
+                        statusMessage = "Extracted Original Kernel -> ${exported.filePath}"
+                    )
+                }
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        isBusy = false,
+                        isError = true,
+                        statusMessage = "Export failed: ${e.message}"
+                    )
+                }
             }
         }
     }
 
     fun exportModifiedKernel(format: ExportFormat) {
-        val state = _uiState.value
-        val env = state.environment ?: return
         viewModelScope.launch {
             _uiState.update { it.copy(isBusy = true, isError = false) }
-            val stock = repository.getPrimaryStockBackup() ?: backups.value.firstOrNull()
-            val bundle = engine.buildModifiedKernelImagesInPlace(
-                env = env,
-                stockBootSource = stock?.localFilePath?.let { File(it) },
-                stockVendorBootSource = stock?.vendorBootFilePath?.let { File(it) },
-                stockVbmetaSource = stock?.vbmetaFilePath?.takeIf { it.isNotBlank() }?.let { File(it) },
-                activeOppPoints = state.oppPoints
-            )
-            val summary = buildModificationSummary(state.oppPoints)
-            val exported = engine.exportKernelArtifact(
-                env = env,
-                bootFile = bundle.bootFile,
-                vendorBootFile = bundle.vendorBootFile,
-                vbmetaFile = bundle.vbmetaFile,
-                format = format,
-                isOriginalStock = false,
-                oppSummary = summary
-            )
-            val fdtStats = "${bundle.fdtPatchResult.oppMicrovoltPatchedCount} uV & ${bundle.fdtPatchResult.oppHzPatchedCount} Hz nodes patched"
-            _uiState.update {
-                it.copy(
-                    isBusy = false,
-                    lastExportedPackage = exported,
-                    exportedHistory = (listOf(exported) + it.exportedHistory).take(8),
-                    statusMessage = "Exported (${format.extension}) [$fdtStats] -> ${exported.filePath}"
+            try {
+                val env = ensureFreshEnvironment()
+                val state = _uiState.value
+                val stock = repository.getPrimaryStockBackup() ?: backups.value.firstOrNull()
+                val bundle = engine.buildModifiedKernelImagesInPlace(
+                    env = env,
+                    stockBootSource = stock?.localFilePath?.let { File(it) },
+                    stockVendorBootSource = stock?.vendorBootFilePath?.let { File(it) },
+                    stockVbmetaSource = stock?.vbmetaFilePath?.takeIf { it.isNotBlank() }?.let { File(it) },
+                    activeOppPoints = state.oppPoints
                 )
+                val summary = buildModificationSummary(state.oppPoints)
+                val exported = engine.exportKernelArtifact(
+                    env = env,
+                    bootFile = bundle.bootFile,
+                    vendorBootFile = bundle.vendorBootFile,
+                    vbmetaFile = bundle.vbmetaFile,
+                    format = format,
+                    isOriginalStock = false,
+                    oppSummary = summary
+                )
+                val fdtStats = "${bundle.fdtPatchResult.oppMicrovoltPatchedCount} uV & ${bundle.fdtPatchResult.oppHzPatchedCount} Hz nodes patched"
+                _uiState.update {
+                    it.copy(
+                        isBusy = false,
+                        lastExportedPackage = exported,
+                        exportedHistory = (listOf(exported) + it.exportedHistory).take(8),
+                        statusMessage = "Exported (${format.extension}) [$fdtStats] -> ${exported.filePath}"
+                    )
+                }
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        isBusy = false,
+                        isError = true,
+                        statusMessage = "Export failed: ${e.message}"
+                    )
+                }
             }
         }
     }
 
     fun flashModifiedKernelDirectly() {
-        val state = _uiState.value
-        val env = state.environment ?: return
         viewModelScope.launch {
             _uiState.update { it.copy(isBusy = true, isError = false) }
             try {
+                val env = ensureFreshEnvironment()
+                val state = _uiState.value
                 val stock = repository.getPrimaryStockBackup() ?: backups.value.firstOrNull()
                 val stockBootFile = stock?.localFilePath?.let { File(it) }
                 val bundle = engine.buildModifiedKernelImagesInPlace(
@@ -437,32 +528,42 @@ class KalamaForgeViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     fun flashOriginalStockKernelDirectly() {
-        val env = _uiState.value.environment ?: return
         viewModelScope.launch {
             _uiState.update { it.copy(isBusy = true, isError = false) }
-            val stock = repository.getPrimaryStockBackup() ?: backups.value.firstOrNull()
-            if (stock == null) {
-                _uiState.update {
-                    it.copy(isBusy = false, isError = true, statusMessage = "No Original Stock Backup available")
+            try {
+                val env = ensureFreshEnvironment()
+                val stock = repository.getPrimaryStockBackup() ?: backups.value.firstOrNull()
+                if (stock == null) {
+                    _uiState.update {
+                        it.copy(isBusy = false, isError = true, statusMessage = "No Original Stock Backup available")
+                    }
+                    return@launch
                 }
-                return@launch
-            }
-            val stockBootFile = File(stock.localFilePath)
-            val report = engine.flashKernelAndVerify(
-                env = env,
-                actionTitle = "Restored Original Stock Kernel + Stock vbmeta Backup",
-                sourceBootFile = stockBootFile,
-                sourceVendorBootFile = File(stock.vendorBootFilePath),
-                sourceVbmetaFile = stock.vbmetaFilePath.takeIf { it.isNotBlank() }?.let { File(it) },
-                expectedStockBootSize = stockBootFile.length()
-            )
-            _uiState.update {
-                it.copy(
-                    isBusy = false,
-                    lastVerificationReport = report,
-                    isError = !report.passed,
-                    statusMessage = "Original Stock Kernel + vbmeta Flashed & Verified!"
+                val stockBootFile = File(stock.localFilePath)
+                val report = engine.flashKernelAndVerify(
+                    env = env,
+                    actionTitle = "Restored Original Stock Kernel + Stock vbmeta Backup",
+                    sourceBootFile = stockBootFile,
+                    sourceVendorBootFile = File(stock.vendorBootFilePath),
+                    sourceVbmetaFile = stock.vbmetaFilePath.takeIf { it.isNotBlank() }?.let { File(it) },
+                    expectedStockBootSize = stockBootFile.length()
                 )
+                _uiState.update {
+                    it.copy(
+                        isBusy = false,
+                        lastVerificationReport = report,
+                        isError = !report.passed,
+                        statusMessage = "Original Stock Kernel + vbmeta Flashed & Verified!"
+                    )
+                }
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        isBusy = false,
+                        isError = true,
+                        statusMessage = "Restore failed: ${e.message}"
+                    )
+                }
             }
         }
     }
